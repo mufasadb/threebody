@@ -82,6 +82,49 @@ impl Body {
     }
 }
 
+// ------- Scenarios -------
+
+enum Scenario {
+    FigureEight,
+}
+
+impl Scenario {
+    fn bodies(&self) -> Vec<Body> {
+        match self {
+            Scenario::FigureEight => {
+                // Chenciner & Montgomery (2000) figure-8 solution.
+                // Three equal masses, positions and velocities scaled for a 900x900 window.
+                let scale = 150.0;
+                let vscale = 80.0;
+                let mass = 1.0;
+                let mut bodies = vec![
+                    Body::new(mass, 8.0,
+                        Vec3::new(-0.97000436 * scale,  0.24308753 * scale, 0.0),
+                        Vec3::new( 0.93240737 * vscale / 2.0,  0.86473146 * vscale / 2.0, 0.0)),
+                    Body::new(mass, 8.0,
+                        Vec3::new( 0.97000436 * scale, -0.24308753 * scale, 0.0),
+                        Vec3::new( 0.93240737 * vscale / 2.0,  0.86473146 * vscale / 2.0, 0.0)),
+                    Body::new(mass, 8.0,
+                        Vec3::new(0.0, 0.0, 0.0),
+                        Vec3::new(-0.93240737 * vscale, -0.86473146 * vscale, 0.0)),
+                ];
+                // Seed initial accelerations so the first leapfrog half-kick is correct
+                let n = bodies.len();
+                let mut init_accs = vec![Vec3::new(0.0, 0.0, 0.0); n];
+                for i in 0..n {
+                    for j in 0..n {
+                        if i != j {
+                            init_accs[i] = init_accs[i] + bodies[i].acc_from(&bodies[j]);
+                        }
+                    }
+                }
+                for (b, a) in bodies.iter_mut().zip(init_accs.iter()) { b.acc = *a; }
+                bodies
+            }
+        }
+    }
+}
+
 // ------- Leapfrog integrator (kick-drift-kick) -------
 
 fn step(bodies: &mut Vec<Body>, dt: f64) {
@@ -121,7 +164,11 @@ fn main() {
     nannou::app(model).run();
 }
 
-struct Model {}
+const DT: f64 = 0.0005;
+
+struct Model {
+    bodies: Vec<Body>,
+}
 
 fn model(app: &App) -> Model {
     app.new_window()
@@ -131,12 +178,29 @@ fn model(app: &App) -> Model {
         .build()
         .unwrap();
 
-    Model {}
+    Model {
+        bodies: Scenario::FigureEight.bodies(),
+    }
 }
 
-fn view(app: &App, _model: &Model, frame: Frame) {
+fn update(_app: &App, model: &mut Model, _update: Update) {
+    // Run several steps per frame so the simulation moves at a visible pace
+    for _ in 0..200 {
+        step(&mut model.bodies, DT);
+    }
+}
+
+fn view(app: &App, model: &Model, frame: Frame) {
     let draw = app.draw();
     draw.background().color(BLACK);
+
+    for body in &model.bodies {
+        draw.ellipse()
+            .x_y(body.pos.x as f32, body.pos.y as f32)
+            .radius(body.radius as f32)
+            .color(WHITE);
+    }
+
     draw.to_frame(app, &frame).unwrap();
 }
 
@@ -221,6 +285,29 @@ mod tests {
         let v = Vec3::new(0.0, 0.0, 7.0);
         let n = v.normalise();
         assert!(vec_approx_eq(n, Vec3::new(0.0, 0.0, 1.0)));
+    }
+
+    // ------- Scenario tests -------
+
+    #[test]
+    fn test_figure_eight_produces_three_bodies() {
+        let bodies = super::Scenario::FigureEight.bodies();
+        assert_eq!(bodies.len(), 3);
+    }
+
+    #[test]
+    fn test_figure_eight_bodies_have_velocity() {
+        // A static setup would be boring — all three should be moving
+        let bodies = super::Scenario::FigureEight.bodies();
+        assert!(bodies.iter().any(|b| b.vel.magnitude() > 0.0));
+    }
+
+    #[test]
+    fn test_figure_eight_acc_initialised() {
+        // acc must be seeded before the first step or leapfrog half-kick is wrong
+        let bodies = super::Scenario::FigureEight.bodies();
+        // at least one body should have non-zero acc (they're all pulling each other)
+        assert!(bodies.iter().any(|b| b.acc.magnitude() > 0.0));
     }
 
     // ------- Body tests -------
