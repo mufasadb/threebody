@@ -82,6 +82,41 @@ impl Body {
     }
 }
 
+// ------- Leapfrog integrator (kick-drift-kick) -------
+
+fn step(bodies: &mut Vec<Body>, dt: f64) {
+    // 1. Half-kick: advance all velocities by dt/2 using current accelerations
+    for body in bodies.iter_mut() {
+        body.vel = body.vel + body.acc * (dt * 0.5);
+    }
+
+    // 2. Drift: advance all positions by full dt using updated velocities
+    for body in bodies.iter_mut() {
+        body.pos = body.pos + body.vel * dt;
+    }
+
+    // 3. Recompute accelerations from new positions.
+    //    Must collect into a separate vec first — Rust won't let us read
+    //    bodies[j] while mutably borrowing bodies[i] from the same vec.
+    let n = bodies.len();
+    let mut new_accs = vec![Vec3::new(0.0, 0.0, 0.0); n];
+    for i in 0..n {
+        for j in 0..n {
+            if i != j {
+                new_accs[i] = new_accs[i] + bodies[i].acc_from(&bodies[j]);
+            }
+        }
+    }
+    for (body, acc) in bodies.iter_mut().zip(new_accs.iter()) {
+        body.acc = *acc;
+    }
+
+    // 4. Half-kick again with the new accelerations
+    for body in bodies.iter_mut() {
+        body.vel = body.vel + body.acc * (dt * 0.5);
+    }
+}
+
 fn main() {
     nannou::app(model).run();
 }
@@ -224,6 +259,60 @@ mod tests {
         let acc1 = a.acc_from(&b1);
         let acc2 = a.acc_from(&b2);
         assert!(approx_eq(acc2.x, acc1.x * 2.0));
+    }
+
+    // ------- step() / leapfrog tests -------
+
+    #[test]
+    fn test_step_bodies_attract_each_other() {
+        // Two bodies at rest on the x-axis — after one step they should
+        // have moved toward each other (positive vel for left, negative for right)
+        let mut bodies = vec![
+            Body::new(1e6, 5.0, Vec3::new(-200.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 0.0)),
+            Body::new(1e6, 5.0, Vec3::new( 200.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 0.0)),
+        ];
+        // Initialise acc before first step
+        let n = bodies.len();
+        let mut init_accs = vec![Vec3::new(0.0, 0.0, 0.0); n];
+        for i in 0..n {
+            for j in 0..n {
+                if i != j { init_accs[i] = init_accs[i] + bodies[i].acc_from(&bodies[j]); }
+            }
+        }
+        for (b, a) in bodies.iter_mut().zip(init_accs.iter()) { b.acc = *a; }
+
+        super::step(&mut bodies, 0.1);
+
+        assert!(bodies[0].vel.x > 0.0, "left body should accelerate rightward");
+        assert!(bodies[1].vel.x < 0.0, "right body should accelerate leftward");
+    }
+
+    #[test]
+    fn test_step_conserves_momentum() {
+        // Total momentum should be constant (Newton's 3rd law through the integrator)
+        let mut bodies = vec![
+            Body::new(1e6, 5.0, Vec3::new(-200.0, 0.0, 0.0), Vec3::new( 10.0, 5.0, 0.0)),
+            Body::new(2e6, 5.0, Vec3::new( 200.0, 0.0, 0.0), Vec3::new(-5.0, -2.0, 0.0)),
+        ];
+        let n = bodies.len();
+        let mut init_accs = vec![Vec3::new(0.0, 0.0, 0.0); n];
+        for i in 0..n {
+            for j in 0..n {
+                if i != j { init_accs[i] = init_accs[i] + bodies[i].acc_from(&bodies[j]); }
+            }
+        }
+        for (b, a) in bodies.iter_mut().zip(init_accs.iter()) { b.acc = *a; }
+
+        let px_before: f64 = bodies.iter().map(|b| b.mass * b.vel.x).sum();
+        let py_before: f64 = bodies.iter().map(|b| b.mass * b.vel.y).sum();
+
+        for _ in 0..100 { super::step(&mut bodies, 0.1); }
+
+        let px_after: f64 = bodies.iter().map(|b| b.mass * b.vel.x).sum();
+        let py_after: f64 = bodies.iter().map(|b| b.mass * b.vel.y).sum();
+
+        assert!((px_after - px_before).abs() < 1e-6, "x momentum should be conserved");
+        assert!((py_after - py_before).abs() < 1e-6, "y momentum should be conserved");
     }
 
     #[test]
