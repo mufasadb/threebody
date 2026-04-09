@@ -53,6 +53,35 @@ impl Mul<Vec3> for Vec3 {
     }
 }
 
+// ------- Body -------
+
+const SOFTENING: f64 = 5.0;  // prevents force spike when bodies pass very close
+
+#[derive(Clone, Debug)]
+struct Body {
+    mass:   f64,
+    radius: f64,   // visual only — doesn't affect physics
+    pos:    Vec3,
+    vel:    Vec3,
+    acc:    Vec3,  // stored between frames for leapfrog half-kick
+}
+
+impl Body {
+    fn new(mass: f64, radius: f64, pos: Vec3, vel: Vec3) -> Self {
+        Body { mass, radius, pos, vel, acc: Vec3::new(0.0, 0.0, 0.0) }
+    }
+
+    /// Acceleration this body receives due to gravity from `other`.
+    /// Returns a/m (acceleration, not force) so we don't need to divide by self.mass.
+    fn acc_from(&self, other: &Body) -> Vec3 {
+        let r = other.pos - self.pos;          // vector pointing toward other body
+        let dist_sq = r.x*r.x + r.y*r.y + r.z*r.z + SOFTENING*SOFTENING;
+        let dist = dist_sq.sqrt();
+        let mag = other.mass / (dist_sq * dist); // G=1 units; GM/r²
+        r * mag
+    }
+}
+
 fn main() {
     nannou::app(model).run();
 }
@@ -78,7 +107,7 @@ fn view(app: &App, _model: &Model, frame: Frame) {
 
 #[cfg(test)]
 mod tests {
-    use super::Vec3;
+    use super::{Vec3, Body};
 
     const EPSILON: f64 = 1e-10;
 
@@ -157,5 +186,54 @@ mod tests {
         let v = Vec3::new(0.0, 0.0, 7.0);
         let n = v.normalise();
         assert!(vec_approx_eq(n, Vec3::new(0.0, 0.0, 1.0)));
+    }
+
+    // ------- Body tests -------
+
+    fn make_body(mass: f64, x: f64, y: f64) -> Body {
+        Body::new(mass, 5.0, Vec3::new(x, y, 0.0), Vec3::new(0.0, 0.0, 0.0))
+    }
+
+    #[test]
+    fn test_acc_from_points_toward_other_body() {
+        // body at origin, other to the right — acceleration should be positive x
+        let a = make_body(1.0, 0.0, 0.0);
+        let b = make_body(1.0, 100.0, 0.0);
+        let acc = a.acc_from(&b);
+        assert!(acc.x > 0.0, "should pull toward +x");
+        assert!(approx_eq(acc.y, 0.0));
+        assert!(approx_eq(acc.z, 0.0));
+    }
+
+    #[test]
+    fn test_acc_from_is_symmetric_in_direction() {
+        // reaction should be equal and opposite
+        let a = make_body(1.0, 0.0, 0.0);
+        let b = make_body(1.0, 100.0, 0.0);
+        let acc_a = a.acc_from(&b);
+        let acc_b = b.acc_from(&a);
+        assert!(approx_eq(acc_a.x, -acc_b.x));
+    }
+
+    #[test]
+    fn test_acc_from_scales_with_mass() {
+        // doubling the attracting body's mass should double the acceleration
+        let a = make_body(1.0, 0.0, 0.0);
+        let b1 = make_body(1.0, 100.0, 0.0);
+        let b2 = make_body(2.0, 100.0, 0.0);
+        let acc1 = a.acc_from(&b1);
+        let acc2 = a.acc_from(&b2);
+        assert!(approx_eq(acc2.x, acc1.x * 2.0));
+    }
+
+    #[test]
+    fn test_acc_from_softening_prevents_singularity() {
+        // bodies at the same position should not produce infinite/NaN acceleration
+        let a = make_body(1e10, 0.0, 0.0);
+        let b = make_body(1e10, 0.0, 0.0);
+        let acc = a.acc_from(&b);
+        assert!(acc.x.is_finite());
+        assert!(acc.y.is_finite());
+        assert!(acc.z.is_finite());
     }
 }
